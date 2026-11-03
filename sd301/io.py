@@ -99,3 +99,20 @@ def load_homography():
     import pandas as pd
     df = pd.read_csv(asset_paths()["homography"])
     return df
+
+
+def load_broadcast(cache_dir=None, force=False):
+    """Broadcast ATD (own timeline, 164,488 frames), players in normalised pitch units."""
+    paths = asset_paths(source="broadcast")
+    cache_dir = cache_dir or os.path.join(os.path.dirname(paths["atd_raw"]), "cache")
+    os.makedirs(cache_dir, exist_ok=True)
+    cache = os.path.join(cache_dir, "broadcast_atd.npz")
+    team = slot_teams(paths["atd_meta"])
+    if os.path.exists(cache) and not force:
+        z = np.load(cache)
+        out = {k: z[k] for k in z.files}
+    else:
+        px, py, ps, bx, by, bs = parse_atd(paths["atd_raw"], len(team), n_frames=164488)
+        out = dict(px=px, py=py, ps=ps, bx=bx, by=by, bs=bs)
+        np.savez(cache, **out)
+    return out

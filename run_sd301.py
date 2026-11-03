@@ -13,6 +13,7 @@ import warnings
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from sd301.io import load_tracking, load_smart_tagging  # noqa: E402
+from sd301.sync import broadcast_ball_on_tactical  # noqa: E402
 from sd301.pipeline import Params, run, write_csv, params_dict  # noqa: E402
 
 if __name__ == "__main__":
@@ -21,7 +22,9 @@ if __name__ == "__main__":
     args = ap.parse_args()
     warnings.filterwarnings("ignore", category=RuntimeWarning)
     params = Params()
-    labels = run(load_tracking(), params, tags=load_smart_tagging())
+    trk = load_tracking()
+    bro_ball = broadcast_ball_on_tactical(trk) if params.use_broadcast_ball else None
+    labels = run(trk, params, tags=load_smart_tagging(), bro_ball=bro_ball)
     write_csv(args.out, labels)
     print("wrote", args.out)
     print("params:", params_dict(params))

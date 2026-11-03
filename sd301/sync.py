@@ -104,3 +104,30 @@ def load_or_build(trk, bro, cache, log=print):
     os.makedirs(os.path.dirname(cache), exist_ok=True)
     np.savez(cache, map_t=map_t, cost=cost)
     return map_t, cost
+
+
+MAX_MATCH_COST_M = 0.6
+
+
+def broadcast_ball_on_tactical(trk, cache_dir=None, log=print):
+    """(bx, by) metres on the tactical timeline from the broadcast tracker, NaN elsewhere.
+
+    Only frames whose player-position match is tight (< MAX_MATCH_COST_M) are used; when several
+    broadcast frames map to the same tactical frame the best match wins.  The caller uses this
+    only to fill gaps of the tactical ball.
+    """
+    from .io import load_broadcast
+    bro = load_broadcast(cache_dir)
+    from games import asset_paths
+    cache_dir = cache_dir or os.path.join(os.path.dirname(asset_paths(source="broadcast")["atd_raw"]), "cache")
+    map_t, cost = load_or_build(trk, bro, os.path.join(cache_dir, "broadcast_sync.npz"), log)
+    bx, by = bro["bx"] * PITCH_L, bro["by"] * PITCH_W
+    fx = np.full(N_FRAMES, np.nan)
+    fy = np.full(N_FRAMES, np.nan)
+    fc = np.full(N_FRAMES, np.inf)
+    ok = (map_t >= 0) & np.isfinite(bx) & (cost < MAX_MATCH_COST_M)
+    for b in np.where(ok)[0]:
+        t = map_t[b]
+        if cost[b] < fc[t]:
+            fx[t], fy[t], fc[t] = bx[b], by[b], cost[b]
+    return fx, fy

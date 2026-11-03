@@ -53,7 +53,8 @@ explainable model: per-frame evidence, then a sequence decoder that encodes foot
 | tactical Smart Tagging | yes | set-piece team bias only |
 | tactical homography | no | tracking is already in pitch coordinates |
 | tactical video | no | never decoded; not needed for this approach |
-| broadcast video / ATD / homography | no | not frame-aligned; dropped to keep the pipeline simple |
+| broadcast ATD | tried, **dropped** | aligned to the tactical timeline on player positions (`sd301/sync.py`; offsets ≈ 4013 frames in the 1st half, ≈ 26,920 in the 2nd; match cost 0.2-0.5 m vs > 1.7 m elsewhere). Its ball agrees with the tactical ball (median 0.8 m) but it only recovers 5,035 of the 64,643 missing graded ball frames (missing falls 40.7 % → 37.5 %: both trackers lose the ball at the same moments), and it did not improve the full-match Smart-Tagging agreement (0.739 → 0.721), so `use_broadcast_ball` is off |
+| broadcast video / homography | no | not needed |
 | public 5-minute ground truth | read-only sanity check | see §3 |
 
 Also used: the published half boundaries (video frames 11185–90651 and 110808–190197, from

@@ -44,6 +44,8 @@ class Params:
     alive_bias: float = -0.1       # prior: the ball is usually in play
     slow_players_ms: float = 1.2   # mean speed under this over the window => stoppage-like
     slow_logit: float = 0.15
+    # --- broadcast tracker as a second source for the ball (aligned on player positions)
+    use_broadcast_ball: bool = False   # tried and dropped, see technical document
     # --- gaps bounded by the touchlines (ball went out / came back from outside)
     bnd_dist_m: float = 3.0
     bnd_logit: float = 0.3
@@ -302,9 +304,15 @@ def tag_bias(n, a, tags, p):
     return np.clip(bias, -1, 1), phase
 
 
-def run(trk, p=None, tags=None, return_debug=False):
+def run(trk, p=None, tags=None, return_debug=False, bro_ball=None):
     from .features import predict_logit, dead_features
     p = p or Params()
+    if p.use_broadcast_ball and bro_ball is not None:
+        trk = dict(trk)
+        fx, fy = bro_ball
+        gap = ~np.isfinite(trk["bx"]) & np.isfinite(fx)
+        trk["bx"] = np.where(gap, fx, trk["bx"])
+        trk["by"] = np.where(gap, fy, trk["by"])
     labels = np.full(N_FRAMES, "X", dtype="<U1")
     bridge = int(p.bridge_s * FPS)
     bridged, ev_ball = {}, {}
