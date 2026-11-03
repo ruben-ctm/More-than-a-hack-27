@@ -53,6 +53,8 @@ class Params:
     player_dead_gain: float = 0.5   # weight of the player-only dead-ball log-odds
     player_team_gain: float = 0.4   # weight of the player-only possession evidence
     pseudo_conf: float = 0.5        # |smoothed team evidence| needed for a possession pseudo-label
+    feature_window_s: float = 3.0   # +/- window of the player-only features (chosen on held-out
+                                    # pseudo-label AUC: dead 0.875->0.89, possession 0.851->0.855)
     # --- restarts
     same_team_after_dead_nats: float = 1.7   # ln(0.85/0.15): restarts mostly go to the opponent
     # --- Smart Tagging set pieces (team tag = side taking the restart)
@@ -242,13 +244,13 @@ def fit_player_models(trk, bridged, ev_ball, p):
         dead = out | (k & (disp < 1.0))
         alive = k & ~out & (disp > 8.0)
         m = dead | alive
-        X = dead_features(trk["px"][s], trk["py"][s], trk["ps"][s], trk["team"])
+        X = dead_features(trk["px"][s], trk["py"][s], trk["ps"][s], trk["team"], k=int(p.feature_window_s * FPS))
         Xd.append(X[m])
         yd.append(dead[m].astype(float))
         # possession
         evs = _moving(ev_ball[half], FPS)
         mp = k & (np.abs(evs) > p.pseudo_conf)
-        XP = possession_features(trk["px"][s], trk["py"][s], trk["ps"][s], trk["team"])
+        XP = possession_features(trk["px"][s], trk["py"][s], trk["ps"][s], trk["team"], k=int(p.feature_window_s * FPS))
         pos[half] = (fit_logistic(XP[mp], (evs[mp] > 0).astype(float)), XP)
     dead_model = fit_logistic(np.vstack(Xd), np.concatenate(yd))
     return dead_model, pos
@@ -321,7 +323,7 @@ def run(trk, p=None, tags=None, return_debug=False):
         dl = dead_logit(bx, by, bxi, byi, trk["ps"][s], p)
         if models is not None:
             dead_model, pos = models
-            xd = dead_features(trk["px"][s], trk["py"][s], trk["ps"][s], trk["team"])
+            xd = dead_features(trk["px"][s], trk["py"][s], trk["ps"][s], trk["team"], k=int(p.feature_window_s * FPS))
             dl = dl + p.player_dead_gain * np.clip(predict_logit(dead_model, xd), -4, 4)
             mdl, XP = pos[half]
             ev += p.player_team_gain * np.tanh(predict_logit(mdl, XP) / 2.0)
