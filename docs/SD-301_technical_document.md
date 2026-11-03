@@ -29,9 +29,14 @@ explainable model: per-frame evidence, then a sequence decoder that encodes foot
 5. **Restart prior.** Throw-ins, goal kicks, corners and free kicks are awarded against the last
    side to touch the ball, so after a dead-ball stretch resuming with the *same* side costs
    ln(0.85/0.15) ≈ 1.7 nats. Implemented with two dead states (dead-after-H, dead-after-A).
-6. **Smart Tagging.** `SET PIECES` instances whose `Team` tag names a side add a soft team bias
-   (0.3 per frame) over the 12 s after the instance starts. `N/A` instances (all throw-ins, all
-   kick-offs) are ignored. Other codes (phases of play) are not used: they are not possessions.
+6. **Smart Tagging.**
+   * `SET PIECES` whose `Team` tag names a side add a soft team bias (0.3 per frame) over the
+     12 s after the instance starts. `N/A` instances (all throw-ins, all kick-offs) are ignored.
+   * Phases of play (build-up, progression, final third, ..., and the defending/transition
+     counterparts) name who holds the ball (attacking codes: the tagged side; defending codes:
+     the other side). They last tens of seconds and span several possessions (`DATA.md`), so they
+     are **fallback evidence only**: weight 0.25 on frames where the ball is not tracked, never
+     on frames where measured control exists.
 7. **Decoding.** One Viterbi pass per half over the four states with switching costs expressing
    football: an H↔A hand-over needs ≈ 1.5 s of sustained opposing control, entering or leaving a
    stoppage ≈ 1 s. A missing ball gives no evidence, so the previous state persists (this is the
@@ -88,6 +93,13 @@ Also used: the published half boundaries (video frames 11185–90651 and 110808�
   not remove this.
 * When the ball is visible but the stoppage has begun (tracker follows a ball boy or a
   second ball) we call it alive.
+* Independent check, ground-truth-free: the fraction of alive frames inside Smart Tagging
+  phases that name the side we label as holder is 0.739 for this pipeline against 0.646 for
+  `baseline_smooth50` and 0.619 for `baseline_raw` (`tools/tag_agreement.py`; the same ordering
+  as the organisers' published full-match scores). It is a consistency indicator, not a score:
+  the tags are automatic and phase tags are also (weak) inputs.
+* Sanity of the long stoppages: the longest dead stretches we output (74-216 s) are at players'
+  mean speed 0.8 m/s with the ball untracked, around the four goals of the match.
 * Smart Tagging team tags are automatic and sometimes wrong; their weight is deliberately small.
 * No video: aerial duels and tackles that need appearance cues are invisible to us.
 * Next steps with more time: use the homography with the video to see the ball when the tracker

@@ -59,6 +59,9 @@ class Params:
     use_smart_tagging: bool = True
     tag_gain: float = 0.3
     tag_window_s: float = 12.0
+    use_phase_tags: bool = True
+    phase_gain: float = 0.25        # Metrica phases are automatic (~70-80 % reliable): keep weak
+    phase_cap: float = 0.5          # overlapping phases never add more than this per frame
     # --- sequence decoding (costs in nats; 1 frame of full evidence ~ 1 nat)
     team_gain: float = 1.0
     switch_s: float = 1.5          # H<->A needs about this much sustained evidence
@@ -251,9 +254,39 @@ def fit_player_models(trk, bridged, ev_ball, p):
     return dead_model, pos
 
 
+HOLDER_CODES = {"BUILD UP", "PROGRESSION", "BALL IN FINAL THIRD", "BALL IN THE BOX",
+                "PLAYERS IN THE BOX", "CREATING CHANCES", "LONG BALL", "ATTACKING TRANSITION",
+                "GOALS"}
+OTHER_CODES = {"DEFENDING IN MIDDLE THIRD", "DEFENDING IN ATTACKING THIRD",
+               "DEFENDING IN DEFENSIVE THIRD", "DEFENSIVE TRANSITION"}
+
+
 def tag_bias(n, a, tags, p):
-    """Soft team evidence from Smart Tagging set pieces whose Team tag names a side."""
+    """Soft team evidence from Smart Tagging.
+
+    * SET PIECES with a named side: that side restarts, so it holds the ball just after.
+    * Returns (set-piece bias, phase bias); the caller decides where each may act.
+    * Attacking phases name the side holding the ball; defending phases name the side that is
+      defending, so the holder is the other one.  Both are automatic tags: small weight.
+    """
     bias = np.zeros(n)
+    phase = np.zeros(n)
+    if p.use_phase_tags:
+        for t in tags:
+            team = t.get("Team")
+            if team in (None, "N/A"):
+                continue
+            home = team.lower().startswith("barcelona")
+            if t["code"] in HOLDER_CODES:
+                sign = 1.0 if home else -1.0
+            elif t["code"] in OTHER_CODES:
+                sign = -1.0 if home else 1.0
+            else:
+                continue
+            lo, hi = max(t["start"] - a, 0), min(t["end"] - a + 1, n)
+            if hi > lo:
+                phase[lo:hi] += sign * p.phase_gain
+        phase = np.clip(phase, -p.phase_cap, p.phase_cap)
     for t in tags:
         team = t.get("Team")
         if t["code"] != "SET PIECES" or team in (None, "N/A"):
@@ -264,7 +297,7 @@ def tag_bias(n, a, tags, p):
         lo, hi = max(lo, 0), min(hi, n)
         if hi > lo:
             bias[lo:hi] += sign * p.tag_gain
-    return np.clip(bias, -1, 1)
+    return np.clip(bias, -1, 1), phase
 
 
 def run(trk, p=None, tags=None, return_debug=False):
@@ -293,7 +326,11 @@ def run(trk, p=None, tags=None, return_debug=False):
             mdl, XP = pos[half]
             ev += p.player_team_gain * np.tanh(predict_logit(mdl, XP) / 2.0)
         if p.use_smart_tagging and tags:
-            ev += tag_bias(len(ev), a, tags, p)
+            sp_bias, phase = tag_bias(len(ev), a, tags, p)
+            ev += sp_bias
+            # Phases last tens of seconds and span several possessions (DATA.md): they must not
+            # override measured control, so they only speak where the ball is not tracked.
+            ev += phase * (~np.isfinite(bxi))
         ev = np.clip(ev, -1.0, 1.0)
         path = viterbi(ev, dl, p)
         labels[s] = LABELS[path]
