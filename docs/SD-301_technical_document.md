@@ -22,10 +22,12 @@ explainable model: per-frame evidence, then a sequence decoder that encodes foot
      standing, centroid drift, block length / width over ±1 s).
    * A *possession* logistic model per half on the shape of the two teams (who is further up the
      pitch, line heights, block length / width, mean speed difference).
+   Features are computed over ±3 s windows (chosen over ±1 s and ±6 s on the *held-out
+   pseudo-label* AUC, never on the possession ground truth).
    Targets are **pseudo-labels computed from the tracking itself** on frames where the ball *is*
      tracked (outside lines or stationary ⇒ dead; fast inside the pitch ⇒ alive; clear
      single-side control ⇒ that side). The models are refitted from scratch in every run, in
-     < 1 s. Cross-half AUC on the pseudo-labels: 0.875 (dead ball), 0.82–0.86 (possession).
+     < 1 s. Held-out AUC on the pseudo-labels: ≈ 0.89 (dead ball, cross-half), ≈ 0.85 (possession).
 5. **Restart prior.** Throw-ins, goal kicks, corners and free kicks are awarded against the last
    side to touch the ball, so after a dead-ball stretch resuming with the *same* side costs
    ln(0.85/0.15) ≈ 1.7 nats. Implemented with two dead states (dead-after-H, dead-after-A).
@@ -73,6 +75,10 @@ Also used: the published half boundaries (video frames 11185–90651 and 110808�
   designed from the observations in the data documentation and checked for stability with
   ground-truth-free tools (`tools/sensitivity.py`, `tools/diagnostics.py`), not chosen by
   public score. The public window has 17 possessions and cannot rank versions anyway.
+* The ±3 s feature window (v4) moved the public-window spellF1 from 0.533 to 0.477 (one
+  possession in 17: inside the noise) while leaving the full-match Smart-Tagging agreement
+  unchanged at 0.739. We kept it because the rule we set beforehand (held-out pseudo-label AUC)
+  favoured it, and report the drop rather than reverse the decision on 17 possessions.
 * We did not compare the output against the video.
 
 ## 4. Possession rules implemented
