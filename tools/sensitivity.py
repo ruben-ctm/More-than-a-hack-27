@@ -11,7 +11,7 @@ from sd301.pipeline import Params, run
 
 NUMERIC = ["sigma_m", "ctrl_max_m", "switch_s", "dead_switch_s", "still_m", "gap_dead_s",
            "gap_logit", "player_dead_gain", "player_team_gain", "same_team_after_dead_nats",
-           "tag_gain", "alive_bias", "out_logit", "still_logit"]
+           "tag_gain", "phase_gain", "alive_bias", "out_logit", "still_logit"]
 trk, tags = load_tracking(), load_smart_tagging()
 base = run(trk, Params(), tags)
 mask = np.zeros(len(base), bool)
