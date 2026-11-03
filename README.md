@@ -192,3 +192,17 @@ competition only, under the terms you accept at enrolment.
   url    = {https://github.com/metrica-sports/more-than-a-hack-2027}
 }
 ```
+
+---
+
+## Team SD-301 — our solution
+
+Tracking-only pipeline (`sd301/`), no training on ground truth, no video decoding.
+
+```bash
+python run_sd301.py                                   # -> outputs/SD-301.csv
+python evaluation/validate_submission.py outputs/SD-301.csv
+```
+
+Technical document: [docs/SD-301_technical_document.md](docs/SD-301_technical_document.md)
+(PDF: `docs/SD-301.pdf`). The match data in `data/` is git-ignored and is not part of this repo.

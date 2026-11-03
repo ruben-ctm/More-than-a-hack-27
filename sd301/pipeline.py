@@ -44,6 +44,21 @@ class Params:
     alive_bias: float = -0.1       # prior: the ball is usually in play
     slow_players_ms: float = 1.2   # mean speed under this over the window => stoppage-like
     slow_logit: float = 0.15
+    # --- gaps bounded by the touchlines (ball went out / came back from outside)
+    bnd_dist_m: float = 3.0
+    bnd_logit: float = 0.3
+    min_gap_s: float = 1.0
+    # --- self-supervised player-only models (fitted on pseudo-labels from this match's tracking)
+    use_player_models: bool = True
+    player_dead_gain: float = 0.5   # weight of the player-only dead-ball log-odds
+    player_team_gain: float = 0.4   # weight of the player-only possession evidence
+    pseudo_conf: float = 0.5        # |smoothed team evidence| needed for a possession pseudo-label
+    # --- restarts
+    same_team_after_dead_nats: float = 1.7   # ln(0.85/0.15): restarts mostly go to the opponent
+    # --- Smart Tagging set pieces (team tag = side taking the restart)
+    use_smart_tagging: bool = True
+    tag_gain: float = 0.3
+    tag_window_s: float = 12.0
     # --- sequence decoding (costs in nats; 1 frame of full evidence ~ 1 nat)
     team_gain: float = 1.0
     switch_s: float = 1.5          # H<->A needs about this much sustained evidence
@@ -130,48 +145,160 @@ def dead_logit(bx, by, bxi, byi, ps, p):
     cnt = np.convolve(np.isfinite(spd).astype(float), kernel, "same")
     mean_spd = np.where(cnt > 0, num / np.maximum(cnt, 1), np.nan)
     L[np.isfinite(mean_spd) & (mean_spd < p.slow_players_ms)] += p.slow_logit
+    L += boundary_gap_logit(bx, by, p)
     return L
 
 
+def _line_distance(x, y):
+    return np.minimum.reduce([x, PITCH_L - x, y, PITCH_W - y])
+
+
+def boundary_gap_logit(bx, by, p):
+    """+logit across ball gaps that start / end next to a touchline: the ball went out."""
+    n = len(bx)
+    out = np.zeros(n)
+    missing = ~np.isfinite(bx)
+    d = np.diff(np.concatenate(([0], missing.astype(np.int8), [0])))
+    starts, ends = np.where(d == 1)[0], np.where(d == -1)[0]
+    for s0, e0 in zip(starts, ends):
+        if e0 - s0 < p.min_gap_s * FPS or s0 == 0 or e0 >= n:
+            continue
+        near_start = _line_distance(bx[s0 - 1], by[s0 - 1]) < p.bnd_dist_m
+        near_end = _line_distance(bx[e0], by[e0]) < p.bnd_dist_m
+        out[s0:e0] += p.bnd_logit * (int(near_start) + int(near_end))
+    return out
+
+
 def viterbi(team_ev, dlogit, p):
-    """Decode H/A/D for one contiguous segment.  Costs are negative log-likelihoods."""
+    """Decode H / A / D(after H) / D(after A) for one contiguous segment.
+
+    Two dead states remember who had the ball before the stoppage, because restarts mostly go
+    to the *other* side (throw-in, goal kick, corner and free kick are awarded against the last
+    toucher) -- resuming with the same side costs `same_team_after_dead_nats`.
+    Costs are negative log-likelihoods; being in play is costly where dead-ball evidence is high.
+    """
     n = len(team_ev)
     c_sw = p.switch_s * FPS * 0.5          # evidence is in [-1, 1]; 0.5 avg => scale
     c_d = p.dead_switch_s * FPS * 0.5
-    # per-frame emission costs
-    cost = np.zeros((n, 3))
-    # dlogit > 0 means "dead": being alive is costly then, being dead is rewarded
-    cost[:, H] = -p.team_gain * team_ev + dlogit
-    cost[:, A] = +p.team_gain * team_ev + dlogit
-    cost[:, D] = -dlogit
-    # transitions
-    T = np.array([[0, c_sw, c_d], [c_sw, 0, c_d], [c_d, c_d, 0]], dtype=np.float64)
-    back = np.zeros((n, 3), np.int8)
+    k = p.same_team_after_dead_nats
+    HS, AS, DH, DA = 0, 1, 2, 3
+    cost = np.zeros((n, 4))
+    cost[:, HS] = -p.team_gain * team_ev + dlogit
+    cost[:, AS] = +p.team_gain * team_ev + dlogit
+    cost[:, DH] = cost[:, DA] = -dlogit
+    T = np.full((4, 4), np.inf)
+    np.fill_diagonal(T, 0.0)
+    T[HS, AS] = T[AS, HS] = c_sw
+    T[HS, DH] = c_d                      # H stops -> dead after H
+    T[AS, DA] = c_d
+    T[DH, AS] = c_d                      # restart by the opponent
+    T[DA, HS] = c_d
+    T[DH, HS] = c_d + k                  # restart by the same side
+    T[DA, AS] = c_d + k
+    T[DH, DA] = T[DA, DH] = k            # owner unknown while dead: pay the same prior
+    # forbid the "impossible" shortcuts H->DA / A->DH (a stoppage keeps the last owner)
+    T[HS, DA] = T[AS, DH] = c_d + k
+    back = np.zeros((n, 4), np.int8)
     acc = cost[0].copy()
+    ar = np.arange(4)
     for t in range(1, n):
-        m = acc[:, None] + T                 # m[i, j]: from i to j
+        m = acc[:, None] + T
         back[t] = m.argmin(0)
-        acc = m[back[t], np.arange(3)] + cost[t]
+        acc = m[back[t], ar] + cost[t]
     path = np.zeros(n, np.int8)
     path[-1] = acc.argmin()
     for t in range(n - 1, 0, -1):
         path[t - 1] = back[t, path[t]]
-    return path
+    return np.where(path >= 2, D, path)
 
 
-def run(trk, p=None):
+def _moving(x, k):
+    from .features import moving_mean
+    return moving_mean(x, k)
+
+
+def fit_player_models(trk, bridged, ev_ball, p):
+    """Self-supervised models for frames the ball tracker cannot see.
+
+    dead-ball model : one model for the whole match, targets from ball-visible frames
+                      (outside the lines or stationary = dead, travelling fast inside = alive).
+    possession model: one model per half (sides swap), targets from frames where the ball is
+                      tracked and one side clearly controls it.
+    """
+    from .features import dead_features, possession_features, fit_logistic
+    Xd, yd = [], []
+    pos = {}
+    for half, (a, b) in HALVES.items():
+        s = slice(a, b + 1)
+        bxi, byi = bridged[half]
+        k = np.isfinite(bxi)
+        out = k & ((bxi < -p.out_margin_m) | (bxi > PITCH_L + p.out_margin_m) |
+                   (byi < -p.out_margin_m) | (byi > PITCH_W + p.out_margin_m))
+        w = FPS
+        disp = np.hypot(np.roll(bxi, -w) - np.roll(bxi, w), np.roll(byi, -w) - np.roll(byi, w))
+        dead = out | (k & (disp < 1.0))
+        alive = k & ~out & (disp > 8.0)
+        m = dead | alive
+        X = dead_features(trk["px"][s], trk["py"][s], trk["ps"][s], trk["team"])
+        Xd.append(X[m])
+        yd.append(dead[m].astype(float))
+        # possession
+        evs = _moving(ev_ball[half], FPS)
+        mp = k & (np.abs(evs) > p.pseudo_conf)
+        XP = possession_features(trk["px"][s], trk["py"][s], trk["ps"][s], trk["team"])
+        pos[half] = (fit_logistic(XP[mp], (evs[mp] > 0).astype(float)), XP)
+    dead_model = fit_logistic(np.vstack(Xd), np.concatenate(yd))
+    return dead_model, pos
+
+
+def tag_bias(n, a, tags, p):
+    """Soft team evidence from Smart Tagging set pieces whose Team tag names a side."""
+    bias = np.zeros(n)
+    for t in tags:
+        team = t.get("Team")
+        if t["code"] != "SET PIECES" or team in (None, "N/A"):
+            continue
+        sign = 1.0 if team.lower().startswith("barcelona") else -1.0
+        lo = t["start"] - a
+        hi = lo + int(p.tag_window_s * FPS)
+        lo, hi = max(lo, 0), min(hi, n)
+        if hi > lo:
+            bias[lo:hi] += sign * p.tag_gain
+    return np.clip(bias, -1, 1)
+
+
+def run(trk, p=None, tags=None, return_debug=False):
+    from .features import predict_logit, dead_features
     p = p or Params()
     labels = np.full(N_FRAMES, "X", dtype="<U1")
     bridge = int(p.bridge_s * FPS)
+    bridged, ev_ball = {}, {}
+    for half, (a, b) in HALVES.items():
+        s = slice(a, b + 1)
+        bxi, byi = bridge_gaps(trk["bx"][s], bridge), bridge_gaps(trk["by"][s], bridge)
+        bridged[half] = (bxi, byi)
+        ev_ball[half] = team_evidence(trk["px"][s], trk["py"][s], trk["team"], bxi, byi, p)
+    models = fit_player_models(trk, bridged, ev_ball, p) if p.use_player_models else None
+    debug = {}
     for half, (a, b) in HALVES.items():
         s = slice(a, b + 1)
         bx, by = trk["bx"][s], trk["by"][s]
-        bxi, byi = bridge_gaps(bx, bridge), bridge_gaps(by, bridge)
-        ev = team_evidence(trk["px"][s], trk["py"][s], trk["team"], bxi, byi, p)
+        bxi, byi = bridged[half]
+        ev = ev_ball[half].copy()
         dl = dead_logit(bx, by, bxi, byi, trk["ps"][s], p)
+        if models is not None:
+            dead_model, pos = models
+            xd = dead_features(trk["px"][s], trk["py"][s], trk["ps"][s], trk["team"])
+            dl = dl + p.player_dead_gain * np.clip(predict_logit(dead_model, xd), -4, 4)
+            mdl, XP = pos[half]
+            ev += p.player_team_gain * np.tanh(predict_logit(mdl, XP) / 2.0)
+        if p.use_smart_tagging and tags:
+            ev += tag_bias(len(ev), a, tags, p)
+        ev = np.clip(ev, -1.0, 1.0)
         path = viterbi(ev, dl, p)
         labels[s] = LABELS[path]
-    return labels
+        debug[half] = dict(ev=ev, dl=dl)
+    return (labels, debug) if return_debug else labels
 
 
 def write_csv(path, labels):
