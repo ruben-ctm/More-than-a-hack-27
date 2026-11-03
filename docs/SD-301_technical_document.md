@@ -127,5 +127,5 @@ Deterministic: no random numbers anywhere. Python 3.8–3.12, numpy ≥ 1.21.
 ## 7. Robustness (ground-truth-free)
 
 Changing each hand-set constant by ±30 % keeps ≥ 97 % of graded frames unchanged and moves the
-possession count by at most about ±14 % (the hand-over time, `switch_s`, being the most
-influential constant). See `outputs/sensitivity.md`.
+possession count (277 in the reference run) between 240 and 327 (the hand-over time,
+`switch_s`, being by far the most influential constant). See `outputs/sensitivity.md`.
